@@ -1,13 +1,15 @@
 import shutil
-import os.path
-import requests
-from collections import defaultdict
 import time
-from datetime import datetime
 import pickle
+import re
+import os
+import os.path
+from datetime import datetime
+from collections import defaultdict
+
 import networkx as nx
 from glob import glob
-import os
+import requests
 
 for_encoding = 'é'
 wdt_sparql_url = 'https://query.wikidata.org/sparql'
@@ -19,11 +21,12 @@ def format_time(t):
     """
     return round(t,2)
 
-def make_output_filename(bindir, incident_type, languages):
+
+def make_output_filename(bindir, incident_type, languages, ext='bin'):
     """
     Create a filename based on the incident type and languages. 
     """
-    output_file='%s/%s_%s.bin' % (bindir, incident_type, ','.join(sorted(languages)))
+    output_file = '%s/%s_%s.%s' % (bindir, incident_type, ','.join(sorted(languages)), ext)
     return output_file
 
 def remove_and_create_folder(fldr):
@@ -39,22 +42,33 @@ def split_in_batches(a_list, batch_size=500):
     for i in range(0, len(a_list), batch_size):
         yield a_list[i:i + batch_size]
 
-def get_results_with_retry(wdt_sparql_url, query):
+
+def get_results_with_retry(wdt_sparql_url, query, max_tries=10):
     """
     Run SPARQL query multiple times until the results are there.
     """
-    while True:
+    time_to_sleep = 2
+    tries = 0
+    while tries < max_tries:
         try:
-            r = requests.get(wdt_sparql_url,
-                     params = {'format': 'json', 'query': query})
-        #    res_text=r.text
-        #    response = json.loads(res_text)
+            r = requests.get(wdt_sparql_url, params={'format': 'json', 'query': query})
+            #    res_text=r.text
+            #    response = json.loads(res_text)
+            if r.status_code == 429:
+                match = re.search('(Please retry in )(.)( seconds)', r.text)
+                if match is not None:
+                    time_to_sleep = match.group(2) + 1
             response = r.json()
             break
         except Exception as e:
-            print(e, 'error, retrying')
-            time.sleep(2)
+            print(e, f'error, retrying in {time_to_sleep} seconds')
+            time.sleep(time_to_sleep)
+            time_to_sleep = 2
+            tries += 1
             continue
+    else:
+        raise Exception(f'Tried executing SPARQL query {tries} time(s), failed each time.')
+
     return response
 
 def obtain_label(wd_id):
@@ -77,13 +91,12 @@ def obtain_label(wd_id):
     the_label=results[0]['label']['value']
     return the_label
 
-def construct_and_run_query(type_qid,
-                            event_type_matching,
-                            languages,
-                            more_props,
-                            limit):
+
+def construct_and_run_query(type_qid, event_type_matching, languages, more_props,
+                            limit, max_tries=10):
     """
-    Construct a wikidata query to obtain all events of a specific type with their structured data, then run this query.
+    Construct a wikidata query to obtain all events of a specific type with their structured data,
+    then run this query.
     """
     
     lang2var={}
@@ -111,7 +124,6 @@ def construct_and_run_query(type_qid,
                 if type_qid not in {"Q40231"}:
                     opt_var_labels.append(var + 'Label')
 
-    
     if event_type_matching == 'direct_match':
         main_part = f'?incident wdt:P31 wd:{type_qid} .\nBIND(wd:{type_qid} as ?direct_type) .'
     elif event_type_matching == 'subsumed_by':
@@ -134,12 +146,9 @@ def construct_and_run_query(type_qid,
 
     print('QUERY:\n', query)
 
-    response=get_results_with_retry(wdt_sparql_url, query)
-    
+    response = get_results_with_retry(wdt_sparql_url, query, max_tries=max_tries)
     results=response['results']['bindings']
-
     results_by_id=index_results_by_id(results, lang2var, more_props)
-   
     return results_by_id
 
 
@@ -207,10 +216,7 @@ def deduplicate_ref_texts(ref_texts):
     return new_ref_texts
 
 
-def extract_subclass_of_ontology(wdt_sparql_url,
-                                 output_folder,
-                                 output_basename,
-                                 verbose=0):
+def extract_subclass_of_ontology(wdt_sparql_url, output_folder, output_basename, verbose=0):
     """
     determine whether event type one is subclass or instance of event type two
 
@@ -419,7 +425,6 @@ def load_event_type2instancefreq(wdt_sparql_url, output_path, verbose=0):
     return event_type2instance_freq
 
 
-
 def get_bin_paths(folder, suffix, pilot=False):
     """
     return iterable of paths with the specified requirements
@@ -448,10 +453,7 @@ def get_bin_paths(folder, suffix, pilot=False):
     return paths
 
 
-def get_uris(inc_coll_obj,
-             prefix=WIKIDATA_PREFIX,
-             rels_to_ignore={'sem:hasTimeStamp'},
-             verbose=0):
+def get_uris(inc_coll_obj, prefix=WIKIDATA_PREFIX, rels_to_ignore={'sem:hasTimeStamp'}, verbose=0):
     """
 
     :param inc_coll_obj:
@@ -479,7 +481,11 @@ def get_uris(inc_coll_obj,
                 continue
 
             for uri_and_label in set_with_uri_and_label:
-                uri, label = uri_and_label.split(' | ')
+                if ' | ' in uri_and_label:
+                    uri, label = uri_and_label.split(' | ')
+                else:
+                    uri = uri_and_label
+                    print(f"WARNING: no label... ? value was {uri_and_label}")
                 if prefix:
                     if not uri.startswith(prefix):
                         continue
