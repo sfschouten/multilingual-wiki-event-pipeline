@@ -1,3 +1,7 @@
+import sys
+
+from tqdm import tqdm
+
 import json
 import os
 import re
@@ -78,7 +82,7 @@ def create_pilot_data(data,
     cached = {}
 
     data.incidents = remove_incidents_with_missing_FEs(data.incidents, data.incident_type)
-    for incident in data.incidents:
+    for incident in tqdm(data.incidents, file=sys.stdout):
         langs = set()
         incident.reference_texts = utils.deduplicate_ref_texts(incident.reference_texts)
         new_ref_texts = []
@@ -118,7 +122,7 @@ def create_pilot_data(data,
                 else:
                     new_v_set.add(v)
             incident.extra_info[p] = new_v_set
-    print('Num of pilot incidents', len(pilot_incidents))
+    print('\nNum of pilot incidents', len(pilot_incidents))
     return pilot_incidents
 
 
@@ -227,19 +231,11 @@ def add_hyperlinks(naf, annotations, prefix, language, dct, wiki_langlinks={}, v
                                         add_comments=True)
 
 
-def text_to_naf(wiki_title,
-                target_languages,
-                text,
-                wiki_uri,
-                annotations,
-                prefix,
-                language,
-                nlp,
-                dct,
-                output_folder=None,
-                wiki_langlinks={},
-                verbose=0):
-    assert language in target_languages, f'{language} not part of supported languages: {" ".join(target_languages)}'
+def text_to_naf(wiki_title, target_languages, text, wiki_uri, annotations, prefix, language,
+                nlp, dct, output_folder=None, wiki_langlinks={}, verbose=0):
+
+    assert language in target_languages,\
+        f'{language} not part of supported languages: {" ".join(target_languages)}'
 
     # parse with spaCy
     add_mw = False
