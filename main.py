@@ -8,7 +8,8 @@ Usage:
    --path_mapping_wd_to_sem=<path_mapping_wd_to_sem>\
    --languages=<languages>\
    --wikipedia_sources=<wikipedia_sources>\
-   --verbose=<verbose>
+   --verbose=<verbose>\
+   [--skipspacy]
 
 Options:
     --config_path=<config_path>
@@ -18,6 +19,7 @@ Options:
     --languages=<languages> languages separated by -, e.g., "nl-it-en"
     --wikipedia_sources=<wikipedia_sources> if "True", crawl Wikipedia sources
     --verbose=<verbose> 0 --> no stdout 1 --> general stdout 2 --> detailed stdout
+    --skipspacy  when passed, will skip processing by spacy
 
 Example:
     python main.py --config_path="config/mwep_settings.json"\
@@ -32,6 +34,7 @@ import json
 import os
 import pickle
 import time
+import sys
 from datetime import datetime
 
 import pandas as pd
@@ -49,11 +52,13 @@ import wikipedia_utils as wu
 
 for_encoding = 'é'
 
+
 def add_wikipedia_pages_from_api(incidents, wdt_ids):
     assert (len(wdt_ids) > 0)
     id_batches = utils.split_in_batches(wdt_ids, 50)
 
-    for index, batch in enumerate(id_batches):
+    pbar = tqdm(enumerate(id_batches), desc="Adding wikipedia pages from API", file=sys.stdout)
+    for index, batch in pbar:
         wiki_pages = native_api_utils.obtain_wiki_page_titles(batch, languages)
         for incident in incidents:
             if incident.wdt_id in wiki_pages.keys():
@@ -74,10 +79,7 @@ def add_wikipedia_pages_from_api(incidents, wdt_ids):
     return incidents
 
 
-def retrieve_incidents_per_type(type_qid,
-                                event_type_matching,
-                                json_wd_to_sem,
-                                limit=10):
+def retrieve_incidents_per_type(type_qid, event_type_matching, json_wd_to_sem, limit=10):
     """
     Given an event type identifier, retrieve incidents that belong to this type.
     """
@@ -86,14 +88,13 @@ def retrieve_incidents_per_type(type_qid,
 
     incidents = []
     print("\n### 1. ### Retrieving and storing wikidata information from SPARQL...")
-    results_by_id = utils.construct_and_run_query(type_qid,
-                                                  event_type_matching,
-                                                  languages,
-                                                  wdt_fn_mappings_COL,
-                                                  limit)
+    results_by_id = utils.construct_and_run_query(type_qid, event_type_matching, languages,
+                                                  wdt_fn_mappings_COL, limit, max_tries=2)
+
     wdt_ids = []
     if not len(results_by_id.items()):
-        return [], ''
+        return []
+
     for full_wdt_id, inc_data in results_by_id.items():
         extra_info = inc_data['extra_info']
         direct_types = {direct_type.replace('http://www.wikidata.org/entity/', 'wd:')
@@ -119,30 +120,29 @@ def retrieve_incidents_per_type(type_qid,
         )
         incidents.append(incident)
 
-    print("Wikidata querying and storing finished. Number of incidents:", len(incidents))
+    print("\nWikidata querying and storing finished. Number of incidents:", len(incidents))
     print('\n### 2. ### Enriching the reference texts through the Wikipedia-Wikidata API...')
     incidents = add_wikipedia_pages_from_api(incidents, wdt_ids)
-    print('API querying done. Number of incidents:', len(incidents))
+    print('\nAPI querying done. Number of incidents:', len(incidents))
     return incidents
 
 
 def obtain_reference_texts(incidents, wiki_folder, wiki_uri2path_info, language2info):
     print(
-        '\n### 3. ### Retrieve reference text information: text and entity annotations from the local version of Wikipedia.')
+        '\n### 3. ### Retrieve reference text information:'
+        ' text and entity annotations from the local version of Wikipedia.'
+    )
+
     new_incidents = []
-    for incident in tqdm(incidents):
+    for incident in tqdm(incidents, file=sys.stdout):
         new_reference_texts = []
         for ref_text in incident.reference_texts:
             language = ref_text.language
             wiki_title = ref_text.name
-
             prefix = language2info[ref_text.language]['prefix']
 
-            text, annotations, success, reason = wu.load_wiki_page_info(wiki_title,
-                                                                        prefix,
-                                                                        language,
-                                                                        wiki_folder,
-                                                                        wiki_uri2path_info)
+            text, annotations, success, _ = wu.load_wiki_page_info(
+                wiki_title, prefix, language, wiki_folder, wiki_uri2path_info)
 
             if success:
                 ref_text.annotations = annotations
@@ -150,16 +150,18 @@ def obtain_reference_texts(incidents, wiki_folder, wiki_uri2path_info, language2
                 new_reference_texts.append(ref_text)
         new_reference_texts = utils.deduplicate_ref_texts(new_reference_texts)
 
-        if len(
-                new_reference_texts):  # if there are reference texts with text, try to get more data by using the Wiki langlinks info we have stored.
+        # if there are reference texts with text, try to get more data by using the Wiki langlinks info we have stored.
+        if len(new_reference_texts):
             incident.reference_texts = new_reference_texts
             new_incidents.append(incident)
+
     print('Retrieval of reference texts done. Number of incidents:', len(new_incidents))
+
     return new_incidents
 
 
 def get_primary_rt_links(incidents):
-    for incident in tqdm(incidents):
+    for incident in tqdm(incidents, file=sys.stdout):
         for ref_text in incident.reference_texts:
             ext_links = native_api_utils.obtain_primary_rt_links(ref_text.name, ref_text.language)
             if ext_links:
@@ -180,11 +182,11 @@ if __name__ == '__main__':
     print()
 
     mwep_settings = json.load(open(arguments['--config_path']))
-    event_types = {line.strip()
-                   for line in open(arguments['--path_event_types'])}
+    event_types = {line.strip() for line in open(arguments['--path_event_types'])}
     crawl_wikipedia_sources = arguments['--wikipedia_sources'] == "True"
     max_pilot_incidents = mwep_settings['max_pilot_incidents']
     verbose = int(arguments['--verbose'])
+    skip_spacy = arguments['--skipspacy']
 
     # settings for crawling Wikipedia sources
     excluded_domains = set(mwep_settings['newsplease']['excluded_domains'])
@@ -195,7 +197,7 @@ if __name__ == '__main__':
                             int(range_end))
     startswith = mwep_settings['newsplease']['startswith']
     timeout = mwep_settings['newsplease']['timeout']
-    illegal_substrings = mwep_settings['newsplease']['illegal_substrings']
+    illegal_substrings = set(mwep_settings['newsplease']['illegal_substrings'])
     illegal_chars_in_title = mwep_settings['newsplease']['illegal_chars_in_title']
 
     wiki_folder = mwep_settings['wiki_folder']
@@ -222,7 +224,7 @@ if __name__ == '__main__':
         wiki_uri2path_info = pickle.load(infile)  # make take some time
 
     language_info_path = os.path.join(wiki_folder, 'language2info.json')
-    with open(language_info_path, 'r')  as infile:
+    with open(language_info_path, 'r') as infile:
         language2info = json.load(infile)
 
     print("Wikipedia indices loaded")
@@ -252,40 +254,36 @@ if __name__ == '__main__':
     pilot_collections = []
 
     for incident_type_uri in event_types:
-
         incident_type = incident_type_uri
-
         pilot_and_languages = languages + ['pilot']
-
         inc_stats = [incident_type_uri, ','.join(languages)]
 
         print('\n\n\n')
         print('----- INCIDENT TYPE: %s -----' % incident_type_uri)
-        print('\n\n')
+        #print('\n\n')
 
         start = time.time()
 
         # Query SPARQL and the API to get incidents, their properties, and labels.
-        incidents = retrieve_incidents_per_type(incident_type_uri,
-                                                event_type_matching,
-                                                json_wd_to_sem,
-                                                99999)
+        incidents = retrieve_incidents_per_type(
+            incident_type_uri, event_type_matching, json_wd_to_sem, 99999
+        )
 
         if not len(incidents):
             print('NO INCIDENTS FOUND FOR %s. Continuing to next type...')
             continue
 
-        new_incidents = obtain_reference_texts(incidents, wiki_folder, wiki_uri2path_info, language2info)
+        new_incidents = obtain_reference_texts(
+            incidents, wiki_folder, wiki_uri2path_info, language2info)
 
-        collection = classes.IncidentCollection(incidents=new_incidents,
-                                                incident_type=incident_type,
-                                                incident_type_uri=incident_type_uri,
-                                                languages=languages)
+        collection = classes.IncidentCollection(
+            incidents=new_incidents,
+            incident_type=incident_type,
+            incident_type_uri=incident_type_uri,
+            languages=languages
+        )
 
-        output_file = utils.make_output_filename(bin_folder,
-                                                 incident_type_uri,
-                                                 languages)
-
+        output_file = utils.make_output_filename(bin_folder, incident_type_uri, languages)
         with open(output_file, 'wb') as of:
             pickle.dump(collection, of)
 
@@ -293,33 +291,34 @@ if __name__ == '__main__':
 
         ttl_filename = '%s/%s_%s.ttl' % (rdf_folder, incident_type_uri, '_'.join(languages))
         collection.serialize(ttl_filename)
-
         after_extraction = time.time()
 
-        pilots = pilot_utils.create_pilot_data(collection,
-                                               languages,
-                                               mwep_settings['processing']["must_have_all_languages"],
-                                               mwep_settings['processing']["must_have_english"],
-                                               mwep_settings['processing']["one_page_per_language"])
+        pilots = pilot_utils.create_pilot_data(
+            collection, languages,
+            mwep_settings['processing']["must_have_all_languages"],
+            mwep_settings['processing']["must_have_english"],
+            mwep_settings['processing']["one_page_per_language"]
+        )
 
         if len(pilots) > max_pilot_incidents:
             pilots = list(pilots)[:max_pilot_incidents]
             print(f'selected first {max_pilot_incidents} pilot incidents')
-
         after_pilot_selection = time.time()
 
         pilots = get_primary_rt_links(pilots)
-
         after_primary_texts = time.time()
 
-        pilot_collection = classes.IncidentCollection(incidents=pilots,
-                                                      incident_type_uri=incident_type_uri,
-                                                      incident_type=incident_type,
-                                                      languages=languages)
-
+        pilot_collection = classes.IncidentCollection(
+            incidents=pilots,
+            incident_type_uri=incident_type_uri,
+            incident_type=incident_type,
+            languages=languages
+        )
         pilot_collections.append(pilot_collection)
 
-        ttl_filename = '%s/%s_%s_pilot.ttl' % (rdf_folder, incident_type_uri, '_'.join(pilot_and_languages))
+        ttl_filename = utils.make_output_filename(
+            rdf_folder, incident_type_uri, pilot_and_languages, ext='ttl')
+
         pilot_collection.serialize(ttl_filename)
 
         if len(pilot_collection.incidents) == 0:
@@ -334,19 +333,24 @@ if __name__ == '__main__':
                 primary_text_urls = {primary_text_url
                                      for ref_text_obj in incident_obj.reference_texts
                                      for primary_text_url in ref_text_obj.primary_ref_texts}
-                primary_url_to_ref_text_obj = crawl_utils.get_ref_text_obj_of_primary_reference_texts(primary_text_urls,
-                                                                                                      timeout,
-                                                                                                      startswith=startswith,
-                                                                                                      accepted_languages=accepted_languages,
-                                                                                                      excluded_domains=excluded_domains,
-                                                                                                      title_required=True,
-                                                                                                      num_chars_range=num_chars_range,
-                                                                                                      illegal_substrings=illegal_substrings,
-                                                                                                      illegal_chars_in_title=illegal_chars_in_title,
-                                                                                                      verbose=verbose)
 
-                for url, primary_ref_text_obj in primary_url_to_ref_text_obj.items():
+                primary_url_ref_texts = crawl_utils.get_ref_text_obj_of_primary_reference_texts(
+                    primary_text_urls, timeout,
+                    startswith=startswith,
+                    accepted_languages=accepted_languages,
+                    excluded_domains=excluded_domains,
+                    title_required=True,
+                    num_chars_range=num_chars_range,
+                    illegal_substrings=illegal_substrings,
+                    illegal_chars_in_title=illegal_chars_in_title,
+                    verbose=verbose
+                )
+
+                for url, primary_ref_text_obj in primary_url_ref_texts.items():
                     incident_obj.reference_texts.append(primary_ref_text_obj)
+
+            if skip_spacy:
+                continue
 
             # process with spaCy
             for ref_text_obj in incident_obj.reference_texts:
@@ -363,8 +367,8 @@ if __name__ == '__main__':
                     if ref_text_obj.creation_date is not None:
                         dct = ref_text_obj.creation_date
                     else:
-                        dct = datetime(1,1,1)
-                else: # wikipedia page
+                        dct = datetime(1, 1, 1)
+                else:  # wikipedia page
                     year, month, day = language2info[language]['year_month_day']
                     dct = datetime(year, month, day)
 
@@ -372,17 +376,11 @@ if __name__ == '__main__':
 
                 nlp = models[language]
 
-                pilot_utils.text_to_naf(wiki_title,
-                                        languages,
-                                        text,
-                                        uri,
-                                        annotations,
-                                        prefix,
-                                        language,
-                                        nlp,
-                                        dct,
-                                        output_folder=naf_output_folder,
-                                        wiki_langlinks=wiki_langlinks)
+                pilot_utils.text_to_naf(
+                    wiki_title, languages, text, uri, annotations, prefix, language, nlp, dct,
+                    output_folder=naf_output_folder,
+                    wiki_langlinks=wiki_langlinks
+                )
 
         out_file = utils.make_output_filename(bin_folder, incident_type_uri, pilot_and_languages)
 
@@ -390,10 +388,12 @@ if __name__ == '__main__':
             pickle.dump(pilot_collection, of)
 
         # add Wikidata information to NAF (entities and coreferences layer)
-        xml_utils.add_wikidata_uris_to_naf_files(inc_coll_obj=collection,
-                                                 main_naf_folder=mwep_settings['naf_output_folder'],
-                                                 languages=accepted_languages,
-                                                 verbose=2)
+        xml_utils.add_wikidata_uris_to_naf_files(
+            inc_coll_obj=collection,
+            main_naf_folder=mwep_settings['naf_output_folder'],
+            languages=accepted_languages,
+            verbose=2
+        )
 
         inc_stats.append(len(pilot_collection.incidents))
 
@@ -409,9 +409,10 @@ if __name__ == '__main__':
 
     json_utils.create_indices_from_bin(pilot_collections, project, json_folder)
 
-    headers = ['Type', 'Languages', '#incidents', '#pilot incidents', 'Time to extract incidents+RTs',
-               'Time to select pilot data', 'Time to get primary RT links',
-               'Time to run spacy, enrich, and store to NAF+RDF', 'Total time']
+    headers = ['Type', 'Languages', '#incidents', '#pilot incidents',
+               'Time to extract incidents+RTs', 'Time to select pilot data',
+               'Time to get primary RT links', 'Time to run spacy, enrich, and store to NAF+RDF',
+               'Total time']
 
     df = pd.DataFrame(all_inc_stats, columns=headers)
     print(df.to_csv(index=False))
