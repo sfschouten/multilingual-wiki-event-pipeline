@@ -81,6 +81,11 @@ def obtain_wiki_page_titles(wdt_ids, languages, verbose=0):
     results_batch={}
     if 'entities' in j.keys():
         for id, id_data in j['entities'].items():
+            if 'sitelinks' not in id_data:
+                if verbose >= 4:
+                    print(f'Entity {id} has no sitelinks.')
+                continue
+
             results_one={}
             sitelinks=id_data['sitelinks']
             for sitelink, data in sitelinks.items():
