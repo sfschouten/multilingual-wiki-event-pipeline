@@ -1,3 +1,4 @@
+import sys
 from collections import defaultdict
 import urllib
 import http
@@ -5,20 +6,20 @@ import ast
 import socket
 from urllib.parse import urlencode
 import urllib3
+from tqdm import tqdm
 
 import classes
 
 from newsplease import NewsPlease
+import newspaper
 import langdetect
 import lxml
 
 for_encoding = 'é'
 WAYBACK_CDX_SERVER = 'http://web.archive.org/cdx/search/cdx?'
 
-def generate_wayback_uri(url,
-                         last_n=-5,
-                         format='json',
-                         verbose=0):
+
+def generate_wayback_uri(url, last_n=-5, format='json', verbose=0):
     """
     call the https://github.com/internetarchive/wayback/tree/master/wayback-cdx-server#basic-usage
     API to obtain the last snapshots of the wayback machine for a specific URL.
@@ -55,14 +56,7 @@ def generate_wayback_uri(url,
         # org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error
         snapshots = ['']
 
-    for (urlkey,
-         timestamp,
-         original,
-         mimetype,
-         statuscode,
-         digest,
-         length) in snapshots[1:]:
-
+    for _, timestamp, original, _, statuscode, _, _ in snapshots[1:]:
         if statuscode == '-':
             continue 
 
@@ -82,16 +76,17 @@ def generate_wayback_uri(url,
     return status, wb_url
 
 
-def run_newsplease(url,
-                   timeout,
-                   startswith=None,
-                   accepted_languages=set(),
-                   excluded_domains=set(),
-                   title_required=True,
-                   num_chars_range=False,
-                   illegal_substrings=[],
-                   illegal_chars_in_title=set(),
-                   verbose=0):
+def run_newsplease(
+        url, timeout,
+        startswith=None,
+        accepted_languages=set(),
+        excluded_domains=set(),
+        title_required=True,
+        num_chars_range=False,
+        illegal_substrings=[],
+        illegal_chars_in_title=set(),
+        verbose=0
+):
     """
     apply newsplease on a url
 
@@ -136,7 +131,7 @@ def run_newsplease(url,
 
             if article is None:
                 status = 'crawl error'
-            elif article.text is None:
+            elif article.maintext is None:
                 status = 'crawl error'
 
         except (urllib.error.URLError,
@@ -147,7 +142,8 @@ def run_newsplease(url,
                 http.client.RemoteDisconnected,
                 ConnectionResetError,
                 lxml.etree.ParserError,
-                langdetect.lang_detect_exception.LangDetectException
+                langdetect.lang_detect_exception.LangDetectException,
+                newspaper.article.ArticleException
                 ) as e:
             article = None
             status = 'URL error'
@@ -162,11 +158,11 @@ def run_newsplease(url,
                 status = 'not in accepted languages'
 
         for illegal_substring in illegal_substrings:
-            if illegal_substring in news_please_info['text']:
+            if illegal_substring in news_please_info['maintext']:
                 status = 'illegal substring'
 
         if num_chars_range:
-            num_chars = len(news_please_info['text'])
+            num_chars = len(news_please_info['maintext'])
             if num_chars not in num_chars_range:
                 status = 'outside of accepted number of characters range'
 
@@ -192,31 +188,32 @@ def run_newsplease(url,
             for attr in attrs:
                 print(f'ATTR {attr}: {getattr(article, attr)}')
 
-            print('num chars', len(news_please_info['text']))
+            print('num chars', len(news_please_info['maintext']))
         else:
             print()
             print(status, wb_url, url)
 
     return status, news_please_info
 
-status, article = run_newsplease(url='https://www.aasdfjsoidfj.nl',
-                                 timeout=10)
+status, article = run_newsplease(url='https://www.aasdfjsoidfj.nl', timeout=10)
 assert status == 'Wayback Machine URL not found'
 
-status, article = run_newsplease(url='https://www.rt.com/news/203203-ukraine-russia-troops-border/',
-                                 timeout=10)
-assert status == 'succes'
+#status, article = run_newsplease(url='https://www.rt.com/news/203203-ukraine-russia-troops-border/',
+#                                 timeout=10)
+#assert status == 'succes'
 
-def get_ref_text_obj_of_primary_reference_texts(urls,
-                                                timeout,
-                                                startswith=None,
-                                                accepted_languages=set(),
-                                                excluded_domains=set(),
-                                                title_required=True,
-                                                num_chars_range=False,
-                                                illegal_substrings=[],
-                                                illegal_chars_in_title=set(),
-                                                verbose=0):
+
+def get_ref_text_obj_of_primary_reference_texts(
+        urls, timeout,
+        startswith=None,
+        accepted_languages=set(),
+        excluded_domains=set(),
+        title_required=True,
+        num_chars_range=False,
+        illegal_substrings=set(),
+        illegal_chars_in_title=set(),
+        verbose=0
+):
     """
     crawl urls using newsplease and represent succesful crawls
     using the classes.ReferenceText object
@@ -236,43 +233,44 @@ def get_ref_text_obj_of_primary_reference_texts(urls,
     url_to_info = {}
     stati = defaultdict(int)
 
-    for index, url in enumerate(urls, 1):
-
+    pbar = tqdm(enumerate(urls, 1), file=sys.stdout)
+    for index, url in pbar:
+        pbar.set_description(url[:30])
         if verbose >= 5:
             if index == 50:
                 print(f'QUITTING AFTER 5 BECAUSE VERBOSE == 50')
                 break
 
-        status, result = run_newsplease(url,
-                                        timeout=timeout,
-                                        startswith=startswith,
-                                        excluded_domains=excluded_domains,
-                                        accepted_languages=accepted_languages,
-                                        title_required=title_required,
-                                        num_chars_range=num_chars_range,
-                                        illegal_substrings=illegal_substrings,
-                                        illegal_chars_in_title=illegal_chars_in_title,
-                                        verbose=verbose)
-
+        status, result = run_newsplease(
+            url,
+            timeout=timeout,
+            startswith=startswith,
+            excluded_domains=excluded_domains,
+            accepted_languages=accepted_languages,
+            title_required=title_required,
+            num_chars_range=num_chars_range,
+            illegal_substrings=illegal_substrings,
+            illegal_chars_in_title=illegal_chars_in_title,
+            verbose=verbose
+        )
         info = {
-            'status' : status,
-            'web_archive_uri' : None,
-            'name' : None,
-            'creation_date' : None,
-            'language' : None,
-            'found_by' : None,
-            'content' : None,
+            'status': status,
+            'web_archive_uri': None,
+            'name': None,
+            'creation_date': None,
+            'language': None,
+            'found_by': None,
+            'content': None,
         }
 
         if status == 'succes':
-            info['web_archive_uri']  = result['url']
+            info['web_archive_uri'] = result['url']
             info['name'] = result['title']
             info['creation_date'] = result['date_publish']
             info['language'] = result['language']
             info['found_by'] = 'Wikipedia source'
-            info['content'] = result['text']
+            info['content'] = result['maintext']
         url_to_info[url] = info
-
 
     url_to_ref_text_obj = {}
     for url, info in url_to_info.items():
@@ -295,7 +293,6 @@ def get_ref_text_obj_of_primary_reference_texts(urls,
         print(f'processed {len(urls)} urls')
         print(f'represented {len(url_to_ref_text_obj)} as ReferenceText object')
         print(stati)
-        
 
     return url_to_ref_text_obj
 
