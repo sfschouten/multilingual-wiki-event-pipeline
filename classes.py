@@ -6,7 +6,6 @@ from rdflib import Graph
 from rdflib import URIRef, BNode, Literal, XSD
 from scipy import stats
 import numpy as np
-import networkx as nx
 
 eventtype2json={}
 for_encoding = 'é'
