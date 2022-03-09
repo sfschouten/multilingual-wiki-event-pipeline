@@ -57,7 +57,8 @@ def get_results_with_retry(wdt_sparql_url, query, max_tries=10):
             if r.status_code == 429:
                 match = re.search('(Please retry in )(.)( seconds)', r.text)
                 if match is not None:
-                    time_to_sleep = match.group(2) + 1
+                    time_to_sleep = int(match.group(2)) + 1
+                    print(f"rate limited, retrying in {time_to_sleep}")
             response = r.json()
             break
         except Exception as e:
