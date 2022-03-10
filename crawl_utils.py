@@ -143,7 +143,8 @@ def run_newsplease(
                 ConnectionResetError,
                 lxml.etree.ParserError,
                 langdetect.lang_detect_exception.LangDetectException,
-                newspaper.article.ArticleException
+                newspaper.article.ArticleException,
+                LookupError
                 ) as e:
             article = None
             status = 'URL error'
